@@ -148,6 +148,12 @@ class XZExporter:
             safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
             if not safe_title:
                 safe_title = "article"
+            
+            # Create article directory
+            article_dir = os.path.join(output_dir, safe_title)
+            if not os.path.exists(article_dir):
+                os.makedirs(article_dir)
+            self.log(f"Created article directory: {article_dir}")
                 
             # Extract Content
             # Improved selector based on inspection
@@ -177,8 +183,38 @@ class XZExporter:
                     if new_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre']:
                         tag.name = new_name
             
+            # Handle code blocks - convert ne-card codeblock to standard <pre><code>
+            codeblock_cards = content_div.find_all('ne-card', attrs={'data-card-name': 'codeblock'})
+            for card in codeblock_cards:
+                try:
+                    # Extract language type
+                    lang_elem = card.select_one('.CodeMirror-code-name span')
+                    language = lang_elem.get_text(strip=True) if lang_elem else ''
+                    
+                    # Extract code content from cm-line divs
+                    code_lines = card.select('.cm-line')
+                    code_content = []
+                    for line in code_lines:
+                        line_text = line.get_text(strip=True)
+                        if line_text:
+                            code_content.append(line_text)
+                    
+                    if code_content:
+                        # Create standard <pre><code> structure
+                        pre_tag = soup.new_tag('pre')
+                        code_tag = soup.new_tag('code')
+                        if language and language != 'Plain Text':
+                            code_tag['class'] = [f'language-{language}']
+                        code_tag.string = '\n'.join(code_content)
+                        pre_tag.append(code_tag)
+                        
+                        # Replace the ne-card with the standard structure
+                        card.replace_with(pre_tag)
+                except Exception as e:
+                    self.log(f"Error processing codeblock: {e}")
+            
             # Handle Images
-            images_dir = os.path.join(output_dir, "images")
+            images_dir = os.path.join(article_dir, "images")
             images = content_div.find_all('img')
             
             if images:
@@ -191,7 +227,7 @@ class XZExporter:
                         local_path = self.download_image(full_url, images_dir, headers=headers, cookies=cookies)
                         if local_path:
                             # Update src to relative path for markdown
-                            rel_path = os.path.relpath(local_path, output_dir)
+                            rel_path = os.path.relpath(local_path, article_dir)
                             img['src'] = rel_path
                             
             # Convert to Markdown
@@ -201,7 +237,7 @@ class XZExporter:
             # Add Title
             final_markdown = f"# {title}\n\nOriginal URL: {url}\n\n{markdown_content}"
             
-            output_file = os.path.join(output_dir, f"{safe_title}.md")
+            output_file = os.path.join(article_dir, f"{safe_title}.md")
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(final_markdown)
                 
