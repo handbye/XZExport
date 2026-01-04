@@ -369,6 +369,10 @@ class XZExporter:
             self.log("Converting to Markdown...")
             markdown_content = md(str(content_div), heading_style="ATX")
             
+            # Post-process markdown to ensure all code blocks have language identifier
+            # Replace code blocks without language (```\n) with default language (```sh\n)
+            markdown_content = re.sub(r'```\s*\n', '```sh\n', markdown_content)
+            
             # Add Title
             final_markdown = f"# {title}\n\nOriginal URL: {url}\n\n{markdown_content}"
             
