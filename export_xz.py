@@ -365,13 +365,45 @@ class XZExporter:
                             rel_path = os.path.relpath(local_path, article_dir)
                             img['src'] = rel_path
                             
+            # Pre-process code blocks to preserve language information
+            # Extract all <pre><code> blocks, convert to markdown format, and replace with placeholders
+            code_blocks = []
+            pre_tags = content_div.find_all('pre')
+            for idx, pre_tag in enumerate(pre_tags):
+                code_tag = pre_tag.find('code')
+                if code_tag:
+                    # Extract language from class attribute
+                    language = ''
+                    classes = code_tag.get('class', [])
+                    for cls in classes:
+                        if cls.startswith('language-'):
+                            language = cls.replace('language-', '')
+                            break
+                    
+                    # If no language found, use default 'sh'
+                    if not language:
+                        language = 'sh'
+                    
+                    # Get code content
+                    code_content = code_tag.get_text()
+                    
+                    # Create markdown code block
+                    markdown_code_block = f"\n```{language}\n{code_content}\n```\n"
+                    code_blocks.append(markdown_code_block)
+                    
+                    # Replace pre tag with placeholder (use double braces to avoid escaping)
+                    placeholder = soup.new_tag('div')
+                    placeholder.string = f"{{{{CODEBLOCK{idx}}}}}"
+                    pre_tag.replace_with(placeholder)
+            
             # Convert to Markdown
             self.log("Converting to Markdown...")
             markdown_content = md(str(content_div), heading_style="ATX")
             
-            # Post-process markdown to ensure all code blocks have language identifier
-            # Replace code blocks without language (```\n) with default language (```sh\n)
-            markdown_content = re.sub(r'```\s*\n', '```sh\n', markdown_content)
+            # Replace placeholders with actual code blocks
+            for idx, code_block in enumerate(code_blocks):
+                placeholder = f"{{{{CODEBLOCK{idx}}}}}"
+                markdown_content = markdown_content.replace(placeholder, code_block)
             
             # Add Title
             final_markdown = f"# {title}\n\nOriginal URL: {url}\n\n{markdown_content}"
