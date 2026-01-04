@@ -207,6 +207,9 @@ class XZExporter:
                                     # Extract code and language
                                     code = card_data.get('code', '')
                                     language = card_data.get('language', '')
+                                    # Set default language to 'sh' if not detected
+                                    if not language or language.lower() in ['', 'plain text', 'plaintext']:
+                                        language = 'sh'
                                     
                                     if code:
                                         # Create a unique marker to identify where this code should be inserted
@@ -218,8 +221,7 @@ class XZExporter:
                                         pre_tag['data-from-card'] = 'true'
                                         pre_tag['id'] = marker_id
                                         code_tag = soup.new_tag('code')
-                                        if language and language.lower() not in ['', 'plain text', 'plaintext']:
-                                            code_tag['class'] = [f'language-{language.lower()}']
+                                        code_tag['class'] = [f'language-{language.lower()}']
                                         code_tag.string = code
                                         pre_tag.append(code_tag)
                                         
@@ -272,6 +274,10 @@ class XZExporter:
                     if lang_elem:
                         language = lang_elem.get_text(strip=True)
                     
+                    # Set default language to 'sh' if not detected
+                    if not language or language.lower() in ['', 'plain text', 'plaintext']:
+                        language = 'sh'
+                    
                     # Extract code content from cm-line divs within cm-content
                     # This avoids extracting line numbers from cm-gutters
                     cm_content = block.select_one('.cm-content')
@@ -300,8 +306,7 @@ class XZExporter:
                         # Create standard <pre><code> structure
                         pre_tag = soup.new_tag('pre')
                         code_tag = soup.new_tag('code')
-                        if language and language.lower() != 'plain text':
-                            code_tag['class'] = [f'language-{language.lower()}']
+                        code_tag['class'] = [f'language-{language.lower()}']
                         code_tag.string = '\n'.join(code_lines)
                         pre_tag.append(code_tag)
                         
@@ -318,6 +323,10 @@ class XZExporter:
                     lang_elem = card.select_one('.CodeMirror-code-name span')
                     language = lang_elem.get_text(strip=True) if lang_elem else ''
                     
+                    # Set default language to 'sh' if not detected
+                    if not language or language.lower() in ['', 'plain text', 'plaintext']:
+                        language = 'sh'
+                    
                     # Extract code content from cm-line divs
                     code_lines = card.select('.cm-line')
                     code_content = []
@@ -330,8 +339,7 @@ class XZExporter:
                         # Create standard <pre><code> structure
                         pre_tag = soup.new_tag('pre')
                         code_tag = soup.new_tag('code')
-                        if language and language != 'Plain Text':
-                            code_tag['class'] = [f'language-{language}']
+                        code_tag['class'] = [f'language-{language.lower()}']
                         code_tag.string = '\n'.join(code_content)
                         pre_tag.append(code_tag)
                         
