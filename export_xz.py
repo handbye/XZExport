@@ -2,7 +2,7 @@ import os
 import time
 import argparse
 import requests
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from selenium import webdriver
@@ -13,6 +13,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import sys
+import json
+import re
 
 class XZExporter:
     def __init__(self, log_callback=None):
@@ -174,6 +176,80 @@ class XZExporter:
                     self.log("Error: Could not find article content.")
                     return
 
+            # Extract code blocks from <card> elements in script tags (Yuque Lake editor format)
+            # These cards contain URL-encoded JSON with the actual code content
+            script_tags = soup.find_all('script')
+            for script in script_tags:
+                script_content = script.string
+                if script_content and ('<card' in script_content) and ('name="codeblock"' in script_content or 'name=\\"codeblock\\"' in script_content):
+                    try:
+                        # Find all card elements in the script content
+                        # Try two patterns: one for unescaped quotes, one for escaped quotes (in JSON)
+                        # Pattern 1: <card type="inline" name="codeblock" value="data:...">
+                        card_pattern1 = r'<card\s+type="inline"\s+name="codeblock"\s+value="(data:[^"]+)"'
+                        # Pattern 2: <card type=\"inline\" name=\"codeblock\" value=\"data:...\">
+                        card_pattern2 = r'<card\s+type=\\"inline\\"\s+name=\\"codeblock\\"\s+value=\\"(data:[^\\]+)\\"'
+                        
+                        matches = re.findall(card_pattern1, script_content)
+                        if not matches:
+                            matches = re.findall(card_pattern2, script_content)
+                        
+                        for encoded_value in matches:
+                            try:
+                                # The value is like "data:{...}" where {...} is URL-encoded JSON
+                                if encoded_value.startswith('data:'):
+                                    json_str = encoded_value[5:]  # Remove 'data:' prefix
+                                    # URL decode
+                                    decoded_json = unquote(json_str)
+                                    # Parse JSON
+                                    card_data = json.loads(decoded_json)
+                                    
+                                    # Extract code and language
+                                    code = card_data.get('code', '')
+                                    language = card_data.get('language', '')
+                                    
+                                    if code:
+                                        # Create a unique marker to identify where this code should be inserted
+                                        # We'll create a placeholder div in the content
+                                        marker_id = f"code_block_{hash(code)}"
+                                        
+                                        # Create standard <pre><code> structure
+                                        pre_tag = soup.new_tag('pre')
+                                        pre_tag['data-from-card'] = 'true'
+                                        pre_tag['id'] = marker_id
+                                        code_tag = soup.new_tag('code')
+                                        if language and language.lower() not in ['', 'plain text', 'plaintext']:
+                                            code_tag['class'] = [f'language-{language.lower()}']
+                                        code_tag.string = code
+                                        pre_tag.append(code_tag)
+                                        
+                                        # Find matching card tag in rendered content and replace it
+                                        # Look for elements that might represent this card in the DOM
+                                        # Usually they have data attributes or specific classes
+                                        card_elements = content_div.find_all(['ne-card', 'card'], attrs={'data-card-name': 'codeblock'})
+                                        for card_elem in card_elements:
+                                            # Check if this card element's content matches
+                                            # Since cards might not have direct content match, we'll replace the first unprocessed one
+                                            if not card_elem.get('data-processed'):
+                                                card_elem.replace_with(pre_tag)
+                                                card_elem['data-processed'] = 'true'
+                                                break
+                                        else:
+                                            # If no matching card found, try to find by content
+                                            # Look for empty or placeholder codeblocks
+                                            codeblock_divs = content_div.find_all(class_='ne-codeblock')
+                                            for block_div in codeblock_divs:
+                                                if not block_div.get('data-processed') and not block_div.find(class_='cm-content'):
+                                                    # This might be an empty placeholder for the card
+                                                    block_div.replace_with(pre_tag)
+                                                    block_div['data-processed'] = 'true'
+                                                    break
+                            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                                self.log(f"Error parsing card value: {e}")
+                                continue
+                    except Exception as e:
+                        self.log(f"Error processing script tag for cards: {e}")
+
             # Pre-process content to handle custom tags (ne-h1, ne-h2, etc.)
             # Convert ne-tags to standard HTML tags for markdownify
             for tag in content_div.find_all(True):
@@ -184,6 +260,57 @@ class XZExporter:
                         tag.name = new_name
             
             # Handle code blocks - convert ne-card codeblock to standard <pre><code>
+            # First, try to find CodeMirror-style code blocks (ne-codeblock)
+            ne_codeblocks = content_div.find_all(class_='ne-codeblock')
+            for block in ne_codeblocks:
+                try:
+                    # Extract language type if available
+                    language = ''
+                    lang_elem = block.select_one('.ne-codeblock-language')
+                    if not lang_elem:
+                        lang_elem = block.select_one('[class*="language"]')
+                    if lang_elem:
+                        language = lang_elem.get_text(strip=True)
+                    
+                    # Extract code content from cm-line divs within cm-content
+                    # This avoids extracting line numbers from cm-gutters
+                    cm_content = block.select_one('.cm-content')
+                    code_lines = []
+                    
+                    if cm_content:
+                        # Get all cm-line divs which contain the actual code
+                        code_line_divs = cm_content.select('.cm-line')
+                        for line_div in code_line_divs:
+                            # Get text content of each line
+                            # Don't use separator as CodeMirror uses spans for syntax highlighting
+                            line_text = line_div.get_text()
+                            code_lines.append(line_text)
+                    else:
+                        # Fallback: if cm-content not found, try to get text but filter out line numbers
+                        # Line numbers are typically in cm-gutters, so we skip those
+                        all_text_nodes = block.find_all(text=True)
+                        for text in all_text_nodes:
+                            parent = text.parent
+                            # Skip if parent is in gutters (line numbers)
+                            if parent and not any('gutter' in cls for cls in parent.get('class', [])):
+                                if text.strip():
+                                    code_lines.append(text)
+                    
+                    if code_lines:
+                        # Create standard <pre><code> structure
+                        pre_tag = soup.new_tag('pre')
+                        code_tag = soup.new_tag('code')
+                        if language and language.lower() != 'plain text':
+                            code_tag['class'] = [f'language-{language.lower()}']
+                        code_tag.string = '\n'.join(code_lines)
+                        pre_tag.append(code_tag)
+                        
+                        # Replace the ne-codeblock with the standard structure
+                        block.replace_with(pre_tag)
+                except Exception as e:
+                    self.log(f"Error processing ne-codeblock: {e}")
+            
+            # Also handle legacy ne-card codeblock format
             codeblock_cards = content_div.find_all('ne-card', attrs={'data-card-name': 'codeblock'})
             for card in codeblock_cards:
                 try:
@@ -195,9 +322,9 @@ class XZExporter:
                     code_lines = card.select('.cm-line')
                     code_content = []
                     for line in code_lines:
-                        line_text = line.get_text(strip=True)
-                        if line_text:
-                            code_content.append(line_text)
+                        # Get text content of each line
+                        line_text = line.get_text()
+                        code_content.append(line_text)
                     
                     if code_content:
                         # Create standard <pre><code> structure
